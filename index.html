@@ -264,7 +264,6 @@ Chart.defaults.font.family="'IBM Plex Mono',monospace"; Chart.defaults.font.size
 const GROUP_DEFS = [
   { grupo:'Carga Molino',                          title:'⚙️  Carga Molino',                                   unit:'TPH',  kpi:'each', cat:'⚙️ Carga' },
   { grupo:'Corriente Motor',                       title:'⚡  Corriente Motor A y B',                            unit:'A',    kpi:'each', cat:'⚡ Motor' },
-  { grupo:'Potencia Motor',                        title:'⚡  Potencia Motor A y B',                             unit:'hp',   kpi:'each', cat:'⚡ Motor' },
   { grupo:'Temperatura Piñón',                     title:'🌡️  Temperatura Piñón',                              unit:'°C',   alarm:66,    trip:77,   kpi:'each', cat:'🌡️ Temperaturas' },
   { grupo:'Temperatura Estanque Filtrado',        title:'🌡️  Temperatura Estanque — Aceite Filtrado',          unit:'°C', alarm:22,    trip:52,   kpi:'each', cat:'🌡️ Temperaturas' }, // límites PENDIENTES de confirmar con pauta
   { grupo:'Temperatura Estanque Retorno',         title:'🌡️  Temperatura Estanque — Aceite Retorno',           unit:'°C', alarm:22,    trip:52,   kpi:'each', cat:'🌡️ Temperaturas' }, // límites PENDIENTES de confirmar con pauta
@@ -278,6 +277,7 @@ const GROUP_DEFS = [
   { grupo:'Flujo Descansos Alimentación (LPM)',    title:'💧  Flujo Descansos — Alimentación (LPM)',            unit:'LPM',  alarm:45.42, trip:41.6, kpi:'avg',  cat:'💧 Flujos' },
   { grupo:'Flujo Descansos Descarga (LPM)',        title:'💧  Flujo Descansos — Descarga (LPM)',                unit:'LPM',  alarm:45.42, trip:41.6, kpi:'avg',  cat:'💧 Flujos' },
   { grupo:'Flujo Piñón (LPM)',                     title:'💧  Flujo Piñón (LPM)',                               unit:'LPM',  alarm:3.2,   trip:2.8,  kpi:'each', cat:'💧 Flujos' },
+  { grupo:'Potencia Motor',                        title:'⚡  Potencia Motor A y B',                             unit:'hp',   kpi:'each', cat:'⚡ Motor' },
   { grupo:'Vibraciones Motor A',                   title:'📳  Vibraciones Motor A',                            unit:'mm/s', kpi:'avg',  cat:'📳 Vibraciones' },
   { grupo:'Vibraciones Motor B',                   title:'📳  Vibraciones Motor B',                            unit:'mm/s', kpi:'avg',  cat:'📳 Vibraciones' },
   { grupo:'Vibraciones Piñón A',                   title:'📳  Vibraciones Piñón A',                            unit:'mm/s', kpi:'avg',  cat:'📳 Vibraciones' },
@@ -503,7 +503,8 @@ const GRUPO_CONFIG = {
   'Vibraciones Piñón A':                    { row:'vib',   unit:'mm/s', alarm:null,  trip:null },
   'Vibraciones Piñón B':                    { row:'vib',   unit:'mm/s', alarm:null,  trip:null },
 };
-const STOP_TPH = 50;               // carga bajo esto = molino detenido
+const STOP_TPH = 50;
+const HIDDEN_GROUPS = ['Temperatura Estanque', 'Temperatura Estanque Filtrado', 'Temperatura Estanque Retorno'];               // carga bajo esto = molino detenido
 const ROW_LBL = { carga:'⚙️ Carga Molino', flujo:'💧 Flujos', pres:'📟 Presiones', temp:'🌡️ Temperaturas', motor:'⚡ Motor', vib:'📳 Vibraciones', otros:'❓ Sin clasificar' };
 const ROW_CLS = { carga:'load', flujo:'flow', pres:'pres', temp:'temp', motor:'load', vib:'vib', otros:'load' };
 const ROW_ORDER = ['carga','flujo','pres','temp','motor','vib','otros'];
@@ -597,14 +598,14 @@ function makeGroupCard(g, keys){
 // Franja de estado (sobre el período y el filtro de molino detenido activos)
 function buildSummary(){
   const el = document.getElementById('sumBar'); if (!el) return;
-  let trip = [], alarmN = 0, normalN = 0, exced = 0, readings = 0;
+  let trip = [], alarmList = [], alarmN = 0, normalN = 0, exced = 0, readings = 0;
   Object.keys(DATA).forEach(k => {
     const cd = grupoDef(DATA[k].grupo); if (cd.alarm == null) return;
     const pts = gS(k).filter(p => !(hideStop && STOPS.has(p.fecha)));
     if (!pts.length) return;
     pts.forEach(p => { readings++; const s = statusOf(cd, p.valor); if (s==='al'||s==='tr') exced++; });
     const s = statusOf(cd, pts[pts.length-1].valor);
-    if (s==='tr') trip.push(k); else if (s==='al') alarmN++; else normalN++;
+    if (s==='tr') trip.push(k); else if (s==='al') { alarmN++; alarmList.push(k); } else normalN++;
   });
   const ad = allDates().filter(d => d >= dFEl.value && d <= dTEl.value);
   const stopN = ad.filter(d => STOPS.has(d)).length;
@@ -614,7 +615,7 @@ function buildSummary(){
   el.innerHTML =
     card('Estado general', estado, 'último valor de cada sensor con límite', estCls) +
     card('Sensores en Trip', trip.length, trip.slice(0,3).map(shortName).join(' · ') || 'ninguno', trip.length ? 'alert' : '') +
-    card('Sensores en Alarma', alarmN, normalN + ' en rango normal', alarmN ? 'warn' : '') +
+    card('Sensores en Alarma', alarmN, (alarmList.slice(0,3).map(shortName).join(' · ') || 'ninguno') + ' · ' + normalN + ' en rango normal', alarmN ? 'warn' : '') +
     card('Excedencias en período', exced, 'de ' + readings + ' lecturas (sin días detenido)', exced ? 'warn' : '') +
     card('Días molino detenido', stopN, 'de ' + ad.length + ' días · carga < ' + STOP_TPH + ' TPH', '');
 }
@@ -896,6 +897,9 @@ async function loadData(){
     if(json.error) throw new Error(json.error);
     if(!json.DATA || !Object.keys(json.DATA).length) throw new Error('Respuesta vacía');
     DATA = clientClassify(json.DATA);
+    // Temporalmente oculto: el estanque (filtrado y retorno) aún no está separado en la data.
+    // Para mostrarlo de nuevo, vacía HIDDEN_GROUPS (y revisa los límites de cada uno).
+    Object.keys(DATA).forEach(k => { if (HIDDEN_GROUPS.includes(DATA[k].grupo)) delete DATA[k]; });
     META = json.META || null;
     IDX = buildIndex();
     buildChartList();
