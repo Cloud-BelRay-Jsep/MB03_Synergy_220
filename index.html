@@ -118,6 +118,17 @@ select:focus,input[type=date]:focus{border-color:var(--cyan)}
 .cbl{display:flex;justify-content:space-between;font-size:9px;color:var(--txd);margin-top:3px;font-family:'IBM Plex Mono',monospace}
 
 .ft{text-align:center;padding:22px;color:var(--txd);font-size:10px;font-family:'IBM Plex Mono',monospace;border-top:1px solid var(--bd);margin-top:20px;letter-spacing:.5px}
+.kdelta.warn{background:rgba(245,158,11,.16);color:#f59e0b;border:1px solid rgba(245,158,11,.35)}
+.k.alert-card{border-color:rgba(239,68,68,.45)}
+.k.warn-card{border-color:rgba(245,158,11,.40)}
+.k-hero{display:flex;flex-direction:column;gap:1px;margin-bottom:8px;padding:6px 8px;border-radius:5px;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.18)}
+.k-hero-lbl{font-size:8px;text-transform:uppercase;letter-spacing:.7px;font-weight:700;font-family:'IBM Plex Mono',monospace;color:var(--cyan)}
+.k-hero-val{font-size:24px;font-weight:600;font-family:'IBM Plex Mono',monospace;line-height:1.15;color:var(--tx)}
+.k-hero-val small{font-size:11px;color:var(--txd);font-weight:500}
+.k-hero-val.warn{color:var(--amber)} .k-hero-val.alert{color:var(--red)}
+.k-prepost{display:flex;gap:8px;align-items:center;justify-content:space-between;font-size:10px;font-family:'IBM Plex Mono',monospace;color:var(--txm);margin-bottom:8px}
+.sumbar{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:18px}
+.sum{background:var(--sf);border:1px solid var(--bd);border-radius:8px;padding:12px 14px}
 </style>
 </head>
 <body>
@@ -149,9 +160,11 @@ select:focus,input[type=date]:focus{border-color:var(--cyan)}
   </div></div>
   <div class="fg"><label>Desde</label><input type="date" id="dF"></div>
   <div class="fg"><label>Hasta</label><input type="date" id="dT"></div>
+  <div class="fg"><label>Molino</label><label style="font-size:11px;font-weight:normal;display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="hideStopCb"> Ocultar días con carga &lt; 50 TPH</label></div>
 </div>
 
 <!-- KPIs -->
+<div class="sumbar" id="sumBar"></div>
 <div id="kA"></div>
 
 <!-- TRENDS -->
@@ -253,7 +266,9 @@ const GROUP_DEFS = [
   { grupo:'Corriente Motor',                       title:'⚡  Corriente Motor A y B',                            unit:'A',    kpi:'each', cat:'⚡ Motor' },
   { grupo:'Potencia Motor',                        title:'⚡  Potencia Motor A y B',                             unit:'hp',   kpi:'each', cat:'⚡ Motor' },
   { grupo:'Temperatura Piñón',                     title:'🌡️  Temperatura Piñón',                              unit:'°C',   alarm:66,    trip:77,   kpi:'each', cat:'🌡️ Temperaturas' },
-  { grupo:'Temperatura Estanque',                  title:'🌡️  Temperatura Estanque — Aceite Filtrado vs Retorno', unit:'°C', alarm:22,    trip:52,   kpi:'each', cat:'🌡️ Temperaturas' },
+  { grupo:'Temperatura Estanque Filtrado',        title:'🌡️  Temperatura Estanque — Aceite Filtrado',          unit:'°C', alarm:22,    trip:52,   kpi:'each', cat:'🌡️ Temperaturas' }, // límites PENDIENTES de confirmar con pauta
+  { grupo:'Temperatura Estanque Retorno',         title:'🌡️  Temperatura Estanque — Aceite Retorno',           unit:'°C', alarm:22,    trip:52,   kpi:'each', cat:'🌡️ Temperaturas' }, // límites PENDIENTES de confirmar con pauta
+  { grupo:'Temperatura Estanque',                  title:'🌡️  Temperatura Estanque',                          unit:'°C', alarm:22,    trip:52,   kpi:'each', cat:'🌡️ Temperaturas' },
   { grupo:'Temperatura Motor',                     title:'🌡️  Temperatura Motor',                              unit:'°C',   kpi:'each', cat:'🌡️ Temperaturas' },
   { grupo:'Temperatura Descansos Descarga',        title:'🌡️  Temperatura Descansos Descarga — RTD',           unit:'°C',   alarm:54,    trip:60,   kpi:'avg',  cat:'🌡️ Temperaturas' },
   { grupo:'Temperatura Descansos Alimentación',    title:'🌡️  Temperatura Descansos Alimentación — RTD',       unit:'°C',   alarm:54,    trip:60,   kpi:'avg',  cat:'🌡️ Temperaturas' },
@@ -351,7 +366,9 @@ function classify_(comp, tipoRaw, grupoRaw) {
     else if (pin) grupo = 'Vibraciones Piñón';
     else grupo = 'Vibraciones (otras)';
   } else if (u === '°C') {
-    if (/estanque/.test(n)) grupo = 'Temperatura Estanque';
+    if (/estanque/.test(n) && /retorno/.test(n)) grupo = 'Temperatura Estanque Retorno';
+    else if (/estanque/.test(n) && /filtrad/.test(n)) grupo = 'Temperatura Estanque Filtrado';
+    else if (/estanque/.test(n)) grupo = 'Temperatura Estanque';
     else if (/eje motor|bobina|motor a|motor b/.test(n) && !pin) grupo = 'Temperatura Motor';
     else if (pin) grupo = 'Temperatura Piñón';
     else if (/rtd|descanso|trunnion/.test(n)) {
@@ -459,73 +476,163 @@ function buildCardDefs(forVars){
   });
   return defs;
 }
+// ── SCORECARDS (estándar v3: una tarjeta por Agrupación Medición) ─────────────
+// Límites y fila por agrupación (columna E). Lo que no esté aquí aparece como "Info".
+// Temperaturas de estanque: límites PENDIENTES de confirmar con la pauta (hoy 22/52 en ambos).
+const GRUPO_CONFIG = {
+  'Carga Molino':                           { row:'carga', unit:'TPH',  alarm:null,  trip:null },
+  'Flujo Descansos Alimentación (LPM)':     { row:'flujo', unit:'LPM',  alarm:45.42, trip:41.6 },
+  'Flujo Descansos Descarga (LPM)':         { row:'flujo', unit:'LPM',  alarm:45.42, trip:41.6 },
+  'Flujo Piñón (LPM)':                      { row:'flujo', unit:'LPM',  alarm:3.2,   trip:2.8 },
+  'Presión Descansos Alimentación':         { row:'pres',  unit:'PSI',  alarm:400,   trip:250 },
+  'Presión Descansos Descarga':             { row:'pres',  unit:'PSI',  alarm:400,   trip:250 },
+  'Presión Diferencial Acondicionamiento':  { row:'pres',  unit:'PSI',  alarm:30,    trip:250 },
+  'Temperatura Descansos Alimentación':     { row:'temp',  unit:'°C',   alarm:54,    trip:60 },
+  'Temperatura Descansos Descarga':         { row:'temp',  unit:'°C',   alarm:54,    trip:60 },
+  'Temperatura Piñón':                      { row:'temp',  unit:'°C',   alarm:66,    trip:77 },
+  'Temperatura Estanque Filtrado':          { row:'temp',  unit:'°C',   alarm:22,    trip:52 },
+  'Temperatura Estanque Retorno':           { row:'temp',  unit:'°C',   alarm:22,    trip:52 },
+  'Temperatura Estanque':                   { row:'temp',  unit:'°C',   alarm:22,    trip:52 },
+  'Temperatura Motor':                      { row:'temp',  unit:'°C',   alarm:null,  trip:null },
+  'Corriente Motor':                        { row:'motor', unit:'A',    alarm:null,  trip:null },
+  'Potencia Motor':                         { row:'motor', unit:'hp',   alarm:null,  trip:null },
+  'Vibraciones Motor A':                    { row:'vib',   unit:'mm/s', alarm:null,  trip:null },
+  'Vibraciones Motor B':                    { row:'vib',   unit:'mm/s', alarm:null,  trip:null },
+  'Vibraciones Piñón':                      { row:'vib',   unit:'mm/s', alarm:null,  trip:null },
+  'Vibraciones Piñón A':                    { row:'vib',   unit:'mm/s', alarm:null,  trip:null },
+  'Vibraciones Piñón B':                    { row:'vib',   unit:'mm/s', alarm:null,  trip:null },
+};
+const STOP_TPH = 50;               // carga bajo esto = molino detenido
+const ROW_LBL = { carga:'⚙️ Carga Molino', flujo:'💧 Flujos', pres:'📟 Presiones', temp:'🌡️ Temperaturas', motor:'⚡ Motor', vib:'📳 Vibraciones', otros:'❓ Sin clasificar' };
+const ROW_CLS = { carga:'load', flujo:'flow', pres:'pres', temp:'temp', motor:'load', vib:'vib', otros:'load' };
+const ROW_ORDER = ['carga','flujo','pres','temp','motor','vib','otros'];
+const ST_TXT = { ok:'✓ Normal', al:'⚠ Alarma', tr:'⛔ Trip', na:'—' };
+const ST_CLS = { ok:'dn', al:'warn', tr:'up', na:'eq' };
+const ST_VAL = { ok:'', al:'warn', tr:'alert', na:'' };
+let STOPS = new Set(), hideStop = false;
+
+function grupoDef(g){
+  const c = GRUPO_CONFIG[g];
+  if (c) return { unit:c.unit, row:c.row, cls:ROW_CLS[c.row], alarm:c.alarm, trip:c.trip };
+  const sample = Object.values(DATA).find(d => d.grupo === g) || {};
+  let r = 'otros';
+  if (/^Flujo/i.test(g)) r = 'flujo'; else if (/^Presi/i.test(g)) r = 'pres';
+  else if (/^Temp/i.test(g)) r = 'temp'; else if (/^Vib/i.test(g)) r = 'vib';
+  else if (/^(Corriente|Potencia)/i.test(g)) r = 'motor'; else if (/^Carga/i.test(g)) r = 'carga';
+  if (!/^Sin clasificar/.test(g)) console.warn('Agrupación sin GRUPO_CONFIG:', g);
+  return { unit: sample.unit || '', row:r, cls:ROW_CLS[r], alarm:null, trip:null };
+}
+const isLowDir = cd => cd.alarm != null && cd.trip != null && cd.alarm > cd.trip;
+function statusOf(cd, v){
+  if (cd.alarm == null || v == null || isNaN(v)) return 'na';
+  if (isLowDir(cd)) return v <= cd.trip ? 'tr' : v <= cd.alarm ? 'al' : 'ok';
+  return v >= cd.trip ? 'tr' : v >= cd.alarm ? 'al' : 'ok';
+}
+const fmtN = (v, d) => {
+  if (v == null || isNaN(v)) return '—';
+  let x = Number(Number(v).toFixed(d)); if (Object.is(x, -0)) x = 0;
+  return x.toLocaleString('es-CL', { minimumFractionDigits:d, maximumFractionDigits:d });
+};
+const fmtL = v => v == null ? '' : Number(v).toLocaleString('es-CL', { maximumFractionDigits:2 });
+const dm = iso => iso ? iso.slice(8,10) + '/' + iso.slice(5,7) : '—';
+const decOf = cd => cd.unit === 'TPH' || cd.unit === 'PSI' ? 0 : (cd.unit === 'LPM' && cd.alarm && cd.alarm < 5 ? 2 : 1);
+
+// Días detenido = carga < STOP_TPH (se calcula sobre toda la serie de carga)
+function computeStops(){
+  STOPS = new Set();
+  const c = DATA['Carga Molino'];
+  if (c) c.dates.forEach((d, i) => { if (c.values[i] < STOP_TPH) STOPS.add(d); });
+}
+// Promedio diario de la agrupación (promedio de sus sensores ese día), dentro del rango Desde/Hasta
+function groupDays(keys){
+  const by = {};
+  keys.forEach(k => gS(k).forEach(p => {
+    if (hideStop && STOPS.has(p.fecha)) return;
+    (by[p.fecha] = by[p.fecha] || []).push(p.valor);
+  }));
+  return Object.keys(by).sort().map(f => ({ fecha:f, valor:avgVals(by[f]) }));
+}
+function makeGroupCard(g, keys){
+  const cd = Object.assign({ grupo:g }, grupoDef(g));
+  const d = decOf(cd);
+  const days = groupDays(keys);
+  if (!days.length) return null;
+  const avg = avgVals(days.map(x => x.valor));
+  const mx = days.reduce((a,b) => b.valor > a.valor ? b : a);
+  const mn = days.reduce((a,b) => b.valor < a.valor ? b : a);
+  const last = days[days.length-1];
+  const stLast = statusOf(cd, last.valor), stAvg = statusOf(cd, avg);
+  const stMx = statusOf(cd, mx.valor), stMn = statusOf(cd, mn.valor);
+  const worst = [stLast,stMx,stMn].includes('tr') ? 'tr' : [stLast,stMx,stMn].includes('al') ? 'al' : stLast;
+  const lim = cd.alarm != null ? `⚠${fmtL(cd.alarm)} ⛔${fmtL(cd.trip)} ${cd.unit}` : 'Sin límite en pauta';
+
+  let prePost = '';
+  if (SYNERGY_DATE) {
+    const pre  = avgVals(days.filter(x => x.fecha < SYNERGY_DATE).map(x => x.valor));
+    const post = avgVals(days.filter(x => x.fecha >= SYNERGY_DATE).map(x => x.valor));
+    if (pre != null && post != null && pre !== 0) {
+      const dp = (post - pre) / Math.abs(pre) * 100;
+      const worse = isLowDir(cd) ? dp < 0 : dp > 0;
+      prePost = `<div class="k-prepost"><span>Pre ${fmtN(pre,d)}</span><span>Post ${fmtN(post,d)}</span>
+        <span class="kdelta ${Math.abs(dp) < 0.5 ? 'eq' : worse ? 'up' : 'dn'}">${dp>=0?'+':''}${dp.toFixed(1)}%</span></div>`;
+    }
+  }
+  const card = document.createElement('div');
+  card.className = `k ${cd.cls}${worst==='tr' ? ' alert-card' : worst==='al' ? ' warn-card' : ''}`;
+  card.innerHTML = `
+    <div class="k-top"><div class="kl">${g}</div><span class="kdelta ${ST_CLS[stLast]}">${cd.alarm!=null ? ST_TXT[stLast] : 'Info'}</span></div>
+    <div class="k-hero"><span class="k-hero-lbl">Promedio período</span><span class="k-hero-val ${ST_VAL[stAvg]}">${fmtN(avg,d)}<small> ${cd.unit}</small></span><span class="k-col-sub">${days.length} días · ${keys.length} sensor${keys.length>1?'es':''}</span></div>
+    <div class="k-compare">
+      <div class="k-col pre"><span class="k-col-lbl">▲ Máximo</span><span class="k-col-avg ${ST_VAL[stMx]}">${fmtN(mx.valor,d)}</span><span class="k-col-sub">${cd.unit} · ${dm(mx.fecha)}</span></div>
+      <div class="k-col pre"><span class="k-col-lbl">▼ Mínimo</span><span class="k-col-avg ${ST_VAL[stMn]}">${fmtN(mn.valor,d)}</span><span class="k-col-sub">${cd.unit} · ${dm(mn.fecha)}</span></div>
+    </div>
+    ${prePost}
+    <div class="k-bottom">
+      <div class="kstat"><span class="kstat-lbl">Último prom. · ${dm(last.fecha)}</span><span class="kstat-val">${fmtN(last.valor,d)} ${cd.unit}</span></div>
+      <div class="kstat"><span class="kstat-lbl">Límites pauta</span><span class="kstat-val" style="font-size:10px">${lim}</span></div>
+    </div>`;
+  return card;
+}
+// Franja de estado (sobre el período y el filtro de molino detenido activos)
+function buildSummary(){
+  const el = document.getElementById('sumBar'); if (!el) return;
+  let trip = [], alarmN = 0, normalN = 0, exced = 0, readings = 0;
+  Object.keys(DATA).forEach(k => {
+    const cd = grupoDef(DATA[k].grupo); if (cd.alarm == null) return;
+    const pts = gS(k).filter(p => !(hideStop && STOPS.has(p.fecha)));
+    if (!pts.length) return;
+    pts.forEach(p => { readings++; const s = statusOf(cd, p.valor); if (s==='al'||s==='tr') exced++; });
+    const s = statusOf(cd, pts[pts.length-1].valor);
+    if (s==='tr') trip.push(k); else if (s==='al') alarmN++; else normalN++;
+  });
+  const ad = allDates().filter(d => d >= dFEl.value && d <= dTEl.value);
+  const stopN = ad.filter(d => STOPS.has(d)).length;
+  const estado = trip.length ? 'Con trip' : alarmN ? 'Con alarmas' : (normalN ? 'Dentro de límites' : 'Sin datos');
+  const estCls = trip.length ? 'alert' : alarmN ? 'warn' : '';
+  const card = (lbl, val, sub, cls) => `<div class="sum"><div class="kl">${lbl}</div><div class="k-hero-val ${cls||''}" style="font-size:18px">${val}</div><div class="k-col-sub">${sub}</div></div>`;
+  el.innerHTML =
+    card('Estado general', estado, 'último valor de cada sensor con límite', estCls) +
+    card('Sensores en Trip', trip.length, trip.slice(0,3).map(shortName).join(' · ') || 'ninguno', trip.length ? 'alert' : '') +
+    card('Sensores en Alarma', alarmN, normalN + ' en rango normal', alarmN ? 'warn' : '') +
+    card('Excedencias en período', exced, 'de ' + readings + ' lecturas (sin días detenido)', exced ? 'warn' : '') +
+    card('Días molino detenido', stopN, 'de ' + ad.length + ' días · carga < ' + STOP_TPH + ' TPH', '');
+}
+
 // ── KPI BUILD ─────────────────────────────────────────────────────────────────
 function buildKPIs(){
-  const cont=document.getElementById('kA'); cont.innerHTML='';
-
-  // Tarjetas dinámicas: 'each' = una tarjeta por serie; 'avg' = una tarjeta con el promedio del grupo.
-  const CARD_DEFS=buildCardDefs();
-  const catOrder=[]; CARD_DEFS.forEach(c=>{ if(!catOrder.includes(c.group)) catOrder.push(c.group); });
-  const rows=catOrder.map(cat=>({label:cat,cards:CARD_DEFS.filter(c=>c.group===cat)}));
-
-  function makeCard(cd){
-    // Todo se calcula con el período seleccionado (Desde/Hasta) y se compara contra
-    // el período inmediatamente anterior de la misma duración.
-    const from=dFEl.value, to=dTEl.value;
-    const addDays=(iso,n)=>{const d=new Date(iso+'T12:00:00');d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);};
-    const nDays=Math.max(1,Math.round((new Date(to+'T12:00:00')-new Date(from+'T12:00:00'))/86400000)+1);
-    const pTo=addDays(from,-1), pFrom=addDays(pTo,-(nDays-1));
-    const all=getMergedPts(cd.keys,false);
-    const minValid=cd.unit==='°C'?15:0;
-    const cur =all.filter(p=>p.fecha>=from&&p.fecha<=to);
-    const prev=all.filter(p=>p.fecha>=pFrom&&p.fecha<=pTo&&p.fecha>=DATA_CUTOFF);
-    if(!all.length)return null;
-    const curV =cur.map(p=>p.valor).filter(v=>v>=minValid);
-    const prevV=prev.map(p=>p.valor).filter(v=>v>=minValid);
-    const curAvg=avgVals(curV), prevAvg=avgVals(prevV);
-    const curMax=maxVals(curV), curMin=curV.length?Math.min(...curV):null;
-    const lastPt=cur.length?cur[cur.length-1]:null;
-    const lowRisk=cd.alarm!=null&&cd.trip!=null&&cd.alarm>cd.trip;
-
-    let deltaTxt='—',deltaCls='eq';
-    if(curAvg!==null&&prevAvg!==null&&prevAvg!==0){
-      const dp=(curAvg-prevAvg)/Math.abs(prevAvg)*100;
-      deltaTxt=`${dp>=0?'+':''}${dp.toFixed(1)}%`;
-      if(Math.abs(dp)>=0.5) deltaCls=lowRisk?(dp<0?'up':'dn'):(dp>0?'up':'dn');
-    }
-    let postCls='';
-    if(curAvg!==null){
-      if(lowRisk){ if(cd.trip&&curAvg<=cd.trip)postCls='alert'; else if(cd.alarm&&curAvg<=cd.alarm)postCls='warn'; }
-      else { if(cd.trip&&curAvg>=cd.trip)postCls='alert'; else if(cd.alarm&&curAvg>=cd.alarm)postCls='warn'; }
-    }
-    let lastCls='';
-    if(lastPt){
-      const v=lastPt.valor;
-      if(lowRisk){ if(cd.trip&&v<=cd.trip)lastCls='color:#ef4444'; else if(cd.alarm&&v<=cd.alarm)lastCls='color:#f59e0b'; }
-      else { if(cd.trip&&v>=cd.trip)lastCls='color:#ef4444'; else if(cd.alarm&&v>=cd.alarm)lastCls='color:#f59e0b'; }
-    }
-    const fmt=v=>v!==null&&v!==undefined?(Math.abs(v)>=100?v.toFixed(0):v.toFixed(1)):'—';
-    const card=document.createElement('div'); card.className=`k ${cd.cls}`;
-    card.innerHTML=`
-      <div class="k-top"><div class="kl">${cd.name}</div><span class="kdelta ${deltaCls}" title="Variación del promedio vs período anterior (${pFrom} → ${pTo})">${deltaTxt}</span></div>
-      <div class="k-compare">
-        <div class="k-col pre"><span class="k-col-lbl">Período anterior</span><span class="k-col-avg">${fmt(prevAvg)}</span><span class="k-col-sub">${cd.unit} · ${prevV.length} reg.</span></div>
-        <div class="k-col post"><span class="k-col-lbl">Período actual</span><span class="k-col-avg ${postCls}">${fmt(curAvg)}</span><span class="k-col-sub">${cd.unit} · ${curV.length} reg.</span></div>
-      </div>
-      <div class="k-bottom">
-        <div class="kstat"><span class="kstat-lbl">Mín · Máx</span><span class="kstat-val">${fmt(curMin)} · ${fmt(curMax)}</span></div>
-        <div class="kstat"><span class="kstat-lbl">Último · ${lastPt?lastPt.fecha:'sin datos'}</span><span class="kstat-val" style="${lastCls}">${lastPt?fmt(lastPt.valor)+' '+cd.unit:'—'}${cd.alarm!=null?` <span style="color:var(--txd);font-size:9px">⚠${cd.alarm}${cd.trip!=null?' ⛔'+cd.trip:''}</span>`:''}</span></div>
-      </div>`;
-    return card;
-  }
-
-  rows.forEach(row=>{
-    const sec=document.createElement('div'); sec.className='ks';
-    const kr=document.createElement('div'); kr.className='kr';
-    sec.innerHTML=`<div class="ks-hdr">${row.label}</div>`;
+  const cont = document.getElementById('kA'); cont.innerHTML = '';
+  buildSummary();
+  const GI = {};
+  Object.keys(DATA).forEach(k => { const g = (DATA[k].grupo || '').trim() || 'Sin agrupación'; (GI[g] = GI[g] || []).push(k); });
+  ROW_ORDER.forEach(row => {
+    const groups = Object.keys(GI).filter(g => grupoDef(g).row === row).sort();
+    if (!groups.length) return;
+    const sec = document.createElement('div'); sec.className = 'ks';
+    const kr = document.createElement('div'); kr.className = 'kr';
+    sec.innerHTML = `<div class="ks-hdr">${ROW_LBL[row]} <span style="font-weight:400;text-transform:none;letter-spacing:0">— promedio por Agrupación Medición</span></div>`;
     sec.appendChild(kr);
-    row.cards.forEach(cd=>{const el=makeCard(cd);if(el)kr.appendChild(el);});
-    if(kr.children.length)cont.appendChild(sec);
+    groups.forEach(g => { const el = makeGroupCard(g, GI[g]); if (el) kr.appendChild(el); });
+    if (kr.children.length) cont.appendChild(sec);
   });
 }
 
@@ -768,7 +875,7 @@ function renderDiag(){
    (sc.length?`<div style="margin-top:8px;color:#fbbf24"><b>⚠ ${sc.length} combinaciones sin clasificar</b> (componente || Tipo || Agrupación → filas). Se grafican en "Sin clasificar"; para clasificarlas, agrégalas/corrígelas en <i>Tabla Maestra Bolas 3</i>:<br>${sc.slice(0,80).map(([k,n])=>esc(k)+' → '+n).join('<br>')}</div>`:'<div style="margin-top:8px;color:#34d399">✔ Todas las series quedaron clasificadas.</div>')+
    (Object.keys(m.comentarios||{}).length?`<div style="margin-top:8px"><b>Comentarios en la hoja:</b> ${esc(Object.entries(m.comentarios).slice(0,15).map(([k,n])=>k+' ('+n+')').join(' · '))}</div>`:'');
 }
-function rebuild(){buildKPIs();buildTrends();buildHeatmap();buildCorr();}
+function rebuild(){computeStops();buildKPIs();buildTrends();buildHeatmap();buildCorr();}
 
 // ── CARGA EN VIVO ────────────────────────────────────────────────────────────
 function showLiveError(msg){
@@ -812,6 +919,7 @@ async function loadData(){
 loadData();
 setInterval(loadData, REFRESH_MS);
 dFEl.addEventListener('change',rebuild);
+document.getElementById('hideStopCb').addEventListener('change',e=>{hideStop=e.target.checked;rebuild();});
 dTEl.addEventListener('change',rebuild);
 </script>
 </body>
