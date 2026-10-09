@@ -420,7 +420,8 @@ function initD(){
 function gS(key){
   if(!DATA[key])return[];
   return DATA[key].dates.map((d,i)=>({fecha:d,valor:DATA[key].values[i]}))
-    .filter(p=>p.fecha>=DATA_CUTOFF&&p.fecha>=dFEl.value&&p.fecha<=dTEl.value);
+    .filter(p=>p.fecha>=DATA_CUTOFF&&p.fecha>=dFEl.value&&p.fecha<=dTEl.value
+      && !(hideStop&&STOPS.has(p.fecha)));   // molino detenido: se oculta en tarjetas, tendencias, mapa y correlación
 }
 function getAllPts(key){
   if(!DATA[key])return[];
