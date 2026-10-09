@@ -203,7 +203,7 @@ select:focus,input[type=date]:focus{border-color:var(--cyan)}
 // ── DATA ──────────────────────────────────────────────────────────────────────
 let DATA = {};
 let META = null;
-const DATA_CUTOFF  = '2026-04-11';  // primer dato disponible
+const DATA_CUTOFF  = '2000-01-01';  // sin recorte: se muestra todo lo que traiga el Sheet (hoy desde 2026-03-01)
 const SYNERGY_DATE = '2026-04-22';  // cambio de aceite Synergy 220
 const MT_START     = '2026-04-21';  // mantención mayor inicio
 const MT_END       = '2026-04-28';  // mantención mayor fin
@@ -265,6 +265,8 @@ const GROUP_DEFS = [
   { grupo:'Flujo Piñón (LPM)',                     title:'💧  Flujo Piñón (LPM)',                               unit:'LPM',  alarm:3.2,   trip:2.8,  kpi:'each', cat:'💧 Flujos' },
   { grupo:'Vibraciones Motor A',                   title:'📳  Vibraciones Motor A',                            unit:'mm/s', kpi:'avg',  cat:'📳 Vibraciones' },
   { grupo:'Vibraciones Motor B',                   title:'📳  Vibraciones Motor B',                            unit:'mm/s', kpi:'avg',  cat:'📳 Vibraciones' },
+  { grupo:'Vibraciones Piñón A',                   title:'📳  Vibraciones Piñón A',                            unit:'mm/s', kpi:'avg',  cat:'📳 Vibraciones' },
+  { grupo:'Vibraciones Piñón B',                   title:'📳  Vibraciones Piñón B',                            unit:'mm/s', kpi:'avg',  cat:'📳 Vibraciones' },
   { grupo:'Vibraciones Piñón',                     title:'📳  Vibraciones Piñón',                              unit:'mm/s', kpi:'avg',  cat:'📳 Vibraciones' },
 ];
 const SERIES_PALETTE=['#38bdf8','#f59e0b','#10d48e','#ef4444','#a78bfa','#ec4899','#06b6d4','#fb923c','#34d399','#818cf8','#fbbf24','#f472b6','#60a5fa','#84cc16','#e879f9','#2dd4bf','#f87171','#c084fc','#facc15','#22d3ee','#4ade80','#fda4af','#93c5fd','#d8b4fe'];
@@ -287,6 +289,106 @@ function compsOfGrupo(g){ return (IDX[g]?Object.values(IDX[g]).flat():[]).sort((
 function shortName(c){
   return c.replace(/^Vibración /i,'Vib. ').replace('Alimentacion','Alim.').replace('Alimentanción','Alim.').replace('Descanso ','Desc. ')
     .replace(' lado cerro','·Cerro').replace(' lado sala','·Sala').replace(' op. Motor',' OM').replace('Embrague','Emb').slice(0,34);
+}
+
+// ── CLASIFICADOR DE RESPALDO (mismo criterio que Code.gs v2) ─────────────────────
+// Si el Apps Script publicado aún es la versión vieja (sin META/unit), se clasifica aquí
+// para que los gráficos, límites y tarjetas funcionen igual. No convierte unidades.
+function norm_(s) {
+  return String(s === null || s === undefined ? '' : s).normalize('NFD')
+    .replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+function isBad_(s) { // vacío, #N/A, #REF!, etc.
+  const t = String(s === null || s === undefined ? '' : s).trim();
+  return t === '' || t.charAt(0) === '#';
+}
+const UNIT_TOKENS = { 'gpm': 'GPM', 'psi': 'PSI', '°c': '°C', 'mm/s': 'mm/s', 'amp': 'Amp', 'hp': 'HP', 'tph': 'TPH', 'lpm': 'LPM' };
+
+function detectUnit_(n, tipoRaw, grupoRaw) {
+  if (/\bpsi\b/.test(n)) return 'PSI';
+  if (/\blpm\b/.test(n)) return 'LPM';
+  if (/\bgpm\b/.test(n)) return 'GPM';
+  const tn = norm_(tipoRaw), gn = norm_(grupoRaw);
+  if (!isBad_(tipoRaw) && UNIT_TOKENS[tn]) return UNIT_TOKENS[tn];
+  const txt = (isBad_(tipoRaw) ? '' : tn) + ' | ' + (isBad_(grupoRaw) ? '' : gn);
+  if (/lpm real/.test(txt)) return 'LPM';
+  if (/vibracion/.test(txt)) return 'mm/s';
+  if (/temperatura/.test(txt)) return '°C';
+  if (/corriente/.test(txt)) return 'Amp';
+  if (/potencia/.test(txt)) return 'HP';
+  if (/tonelada|produccion/.test(txt)) return 'TPH';
+  if (/presion/.test(txt)) return 'PSI';
+  if (/flujos? pi[nñ]on/.test(txt)) return 'LPM';
+  // "Flujos Descanso ..." sin unidad en el componente es ambiguo (el histórico
+  // viejo guardaba PSI bajo ese nombre) → se decide más abajo / queda sin clasificar.
+  if (/vibracion/.test(n)) return 'mm/s';
+  if (/rtd|estanque|eje motor|bobina|temperatura/.test(n)) return '°C';
+  if (/^corriente/.test(n)) return 'Amp';
+  if (/^potencia/.test(n)) return 'HP';
+  if (/carga molino/.test(n)) return 'TPH';
+  if (/sistema acondicionamiento|diferencial|filtro/.test(n)) return 'PSI';
+  // Piñón con "cerro/sala" en el nombre (y sin marca de flujo) = sensores de temperatura.
+  // "Piñón lado motor (A/B)" sin unidad es un flujo de unidad ambigua (GPM o LPM) → null.
+  if (/pi[nñ]on/.test(n) && /cerro|sala/.test(n)) return '°C';
+  return null;
+}
+
+function classify_(comp, tipoRaw, grupoRaw) {
+  const n = norm_(comp);
+  const unit = detectUnit_(n, tipoRaw, grupoRaw);
+  const alim = /alimentacion|alimentanci/.test(n), desc = /descarga/.test(n) || /descanso descarga/.test(n);
+  const pin = /pi[nñ]on/.test(n);
+  let grupo = null, u = unit, flow = false;
+
+  if (u === 'TPH') grupo = 'Carga Molino';
+  else if (u === 'Amp') grupo = 'Corriente Motor';
+  else if (u === 'HP') grupo = 'Potencia Motor';
+  else if (u === 'mm/s') {
+    if (/motor a\b|motor a /.test(n) || /vibracion motor a/.test(n)) grupo = 'Vibraciones Motor A';
+    else if (/motor b\b|motor b /.test(n) || /vibracion motor b/.test(n)) grupo = 'Vibraciones Motor B';
+    else if (pin && /pinon a\b/.test(n)) grupo = 'Vibraciones Piñón A';
+    else if (pin && /pinon b\b/.test(n)) grupo = 'Vibraciones Piñón B';
+    else if (pin) grupo = 'Vibraciones Piñón';
+    else grupo = 'Vibraciones (otras)';
+  } else if (u === '°C') {
+    if (/estanque/.test(n)) grupo = 'Temperatura Estanque';
+    else if (/eje motor|bobina|motor a|motor b/.test(n) && !pin) grupo = 'Temperatura Motor';
+    else if (pin) grupo = 'Temperatura Piñón';
+    else if (/rtd|descanso|trunnion/.test(n)) {
+      if (alim) grupo = 'Temperatura Descansos Alimentación';
+      else if (desc) grupo = 'Temperatura Descansos Descarga';
+      else {
+        const m = n.match(/rtd n?[°º]?\s*(\d+)/);
+        grupo = m ? (Number(m[1]) <= 4 ? 'Temperatura Descansos Alimentación' : 'Temperatura Descansos Descarga') : 'Temperatura (otras)';
+      }
+    } else grupo = 'Temperatura (otras)';
+  } else if (u === 'PSI') {
+    if (/sistema acondicionamiento|diferencial|filtro/.test(n)) grupo = 'Presión Diferencial Acondicionamiento';
+    else if (alim) grupo = 'Presión Descansos Alimentación';
+    else if (desc) grupo = 'Presión Descansos Descarga';
+    else grupo = 'Presión (otras)';
+  } else if (u === 'LPM' || u === 'GPM') {
+    flow = true; u = 'LPM';
+    if (pin) grupo = 'Flujo Piñón (LPM)';
+    else if (alim) grupo = 'Flujo Descansos Alimentación (LPM)';
+    else if (desc) grupo = 'Flujo Descansos Descarga (LPM)';
+    else grupo = 'Flujo (otros, LPM)';
+    if (unit === 'GPM') flow = 'gpm';
+  }
+  if (!grupo) return { unit: null, grupo: null, flow: false };
+  return { unit: u, grupo: grupo, flow: flow };
+}
+
+
+function clientClassify(raw){
+  const out={}; let sin=0;
+  Object.entries(raw).forEach(([comp,d])=>{
+    if(d.unit!==undefined){ out[comp]=d; return; }
+    const cl=classify_(comp,d.tipo,d.grupo);
+    if(cl.grupo) out[comp]=Object.assign({},d,{grupo:cl.grupo,unit:cl.unit});
+    else { sin++; out[comp]=Object.assign({},d,{grupo:'Sin clasificar (revisar Tabla Maestra)',unit:''}); }
+  });
+  return out;
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -343,13 +445,17 @@ let IDX={}; // se reconstruye en loadData() una vez que llegan los datos reales 
             // visto y corregido en MB02).
 
 function cardCls(unit){ return unit==='°C'?'temp':(unit==='LPM'||unit==='PSI')?'flow':'load'; }
-function buildCardDefs(){
+function buildCardDefs(forVars){
+  // Tarjetas: una por sensor en TODOS los grupos (+ una de promedio para los grupos 'avg').
+  // Mapa de calor / correlación (forVars): sólo resumen, para que la matriz no sea gigante.
   const defs=[];
   CHARTS.forEach(ch0=>{
     const comps=compsOfGrupo(ch0.grupo); if(!comps.length) return;
     const base={group:ch0.cat,cls:cardCls(ch0.unit),unit:ch0.unit,alarm:ch0.alarm??null,trip:ch0.trip??null,grupo:ch0.grupo};
-    if(ch0.kpi==='each') comps.forEach(c=>defs.push(Object.assign({},base,{name:shortName(c),keys:[c]})));
-    else defs.push(Object.assign({},base,{name:'Prom. '+ch0.grupo.replace(/^(Temperatura|Presión|Flujo) /,'$1 · ')+' ('+comps.length+')',keys:comps}));
+    const avgCard=()=>Object.assign({},base,{name:'Prom. '+ch0.grupo.replace(/^(Temperatura|Presión|Flujo) /,'$1 · ')+' ('+comps.length+')',keys:comps});
+    const eachCards=()=>comps.map(c=>Object.assign({},base,{name:shortName(c),keys:[c]}));
+    if(forVars){ if(ch0.kpi==='each') defs.push(...eachCards()); else defs.push(avgCard()); }
+    else { if(ch0.kpi==='avg' && comps.length>1) defs.push(avgCard()); defs.push(...eachCards()); }
   });
   return defs;
 }
@@ -510,7 +616,7 @@ function buildTrends(){
 // ── HEATMAP ───────────────────────────────────────────────────────────────────
 // Variables del mapa de calor / correlación = mismas tarjetas KPI (una por serie o promedio del grupo).
 let VARS=[];
-function buildVars(){ VARS=buildCardDefs().map((c,i)=>({id:'V'+i,label:c.name,keys:c.keys,unit:c.unit,group:c.group})); }
+function buildVars(){ VARS=buildCardDefs(true).map((c,i)=>({id:'V'+i,label:c.name,keys:c.keys,unit:c.unit,group:c.group})); }
 function ptsMapOf(val){
   const m={};
   if(/^V\d+$/.test(val)){ const v=VARS.find(x=>x.id===val); if(v) getMergedPts(v.keys,true).forEach(p=>m[p.fecha]=p.valor); }
@@ -650,7 +756,7 @@ function esc(t){return String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>
 function renderDiag(){
   const lu=document.getElementById('lastUpd'); if(lu&&META&&META.fecha_max) lu.textContent='Último dato en el Sheet: '+META.fecha_max+' · cargado '+new Date().toLocaleString('es-CL');
   const el=document.getElementById('diagBody'); if(!el)return;
-  if(!META){el.textContent='La respuesta del Apps Script no trae META (¿versión vieja de Code.gs?). Despliega la "Nueva versión".';return;}
+  if(!META){el.innerHTML='⚠ El Apps Script publicado sigue siendo la versión vieja (sin META): el dashboard clasificó las series por su cuenta, pero conviene pegar el Code.gs nuevo y crear una <b>Nueva versión</b> en Administrar implementaciones. Series recibidas: '+Object.keys(DATA).length;return;}
   const m=META, d=m.descartadas||{};
   const sc=Object.entries(m.sin_clasificar||{});
   el.innerHTML=
@@ -681,7 +787,7 @@ async function loadData(){
     const json = await res.json();
     if(json.error) throw new Error(json.error);
     if(!json.DATA || !Object.keys(json.DATA).length) throw new Error('Respuesta vacía');
-    DATA = json.DATA;
+    DATA = clientClassify(json.DATA);
     META = json.META || null;
     IDX = buildIndex();
     buildChartList();
@@ -710,4 +816,3 @@ dTEl.addEventListener('change',rebuild);
 </script>
 </body>
 </html> 
- 
